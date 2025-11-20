@@ -4,142 +4,267 @@ import pandas as pd
 import plotly.express as px
 
 # 1. Load the Dataset
-# Ensure this file is in the same directory
-#df = pd.read_csv('nyc_collision_data_cleaned.csv')
-df = pd.read_parquet('crashes.parquet')
+# We use PyArrow for the whole dataframe to save memory
+df = pd.read_parquet('crashes.parquet', engine='pyarrow', dtype_backend='pyarrow')
 
-# Pre-processing for Dropdowns (Extract unique values for filters)
-# You may need to adjust column names based on your specific cleaning
-boroughs = df['BOROUGH'].unique().tolist()
-# --- FIX START ---
-# Your file has 'CRASH_DATETIME', so we create 'CRASH_DATE' from it.
-# We convert it to datetime objects to be safe.
-df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce')
-df['CRASH_DATE'] = df['CRASH_DATETIME'].dt.date
+# --- PRE-PROCESSING ---
 
-# Now we can safely extract the years
-# We drop NaNs (Not a Number) to avoid errors in the dropdown
+# A. Handle Dates
+# We convert the date column to standard numpy 'datetime64[ns]' to avoid Windows TimeZone errors
+df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce').astype('datetime64[ns]')
+df['DATE_STR'] = df['CRASH_DATETIME'].dt.strftime('%Y-%m-%d')
+
+# B. Extract Unique Values for Dropdowns
+boroughs = sorted(df['BOROUGH'].dropna().unique().tolist())
 years = sorted(df['CRASH_DATETIME'].dt.year.dropna().astype(int).unique())
-# --- FIX END ---
+
+# Vehicle Types (Limit to top 200 for performance)
+vehicle_types = df['VEHICLE TYPE CODE 1'].dropna().astype(str).unique().tolist()
+vehicle_types = sorted(vehicle_types)[:200] 
+
+# Contributing Factors
+factors = df['CONTRIBUTING FACTOR VEHICLE 1'].dropna().astype(str).unique().tolist()
+factors = sorted(factors)
+
+# Collision Severity Options
+severity_options = ['Fatality', 'Injury', 'Property Damage Only']
+
 # 2. Initialize the App
 app = dash.Dash(__name__)
-server = app.server # Needed for Vercel/Heroku deployment later 
+server = app.server 
 
 # 3. Define the Layout
 app.layout = html.Div([
-    html.H1("NYC Motor Vehicle Collisions Report", style={'textAlign': 'center'}),
+    html.H1("NYC Motor Vehicle Collisions Report", style={'textAlign': 'center', 'fontFamily': 'Arial'}),
 
-    # --- CONTROL PANEL ---
     html.Div([
-        html.H3("Filters"),
-        
-        # Requirement: Multiple dropdown filters [cite: 63]
-        html.Label("Select Borough:"),
-        dcc.Dropdown(
-            id='filter-borough',
-            options=[{'label': b, 'value': b} for b in boroughs],
-            multi=True, # Allow selecting multiple boroughs
-            placeholder="Select Borough(s)..."
-        ),
+        # --- CONTROL PANEL (Left Side) ---
+        html.Div([
+            html.H3("Filters", style={'borderBottom': '2px solid #007bff', 'paddingBottom': '10px'}),
+            
+            # 1. Search Box
+            html.Label("Global Search:", style={'fontWeight': 'bold'}),
+            dcc.Input(
+                id='filter-search', 
+                type='text', 
+                placeholder='e.g. "Brooklyn 2022"', 
+                style={'width': '100%', 'padding': '8px', 'marginBottom': '15px'}
+            ),
 
-        html.Label("Select Year:"),
-        dcc.Dropdown(
-            id='filter-year',
-            options=[{'label': y, 'value': y} for y in years],
-            multi=True,
-            placeholder="Select Year(s)..."
-        ),
-        
-        # Add the other required dropdowns here: Vehicle Type, Contributing Factor, Injury Type [cite: 63]
-        
-        # Requirement: Search Mode 
-        html.Label("Search (e.g., 'Pedestrian'):"),
-        dcc.Input(id='filter-search', type='text', placeholder='Type query...', style={'width': '100%'}),
+            # 2. Borough Filter
+            html.Label("Borough:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-borough',
+                options=[{'label': b, 'value': b} for b in boroughs],
+                multi=True,
+                placeholder="Select Borough(s)...",
+                style={'marginBottom': '10px'}
+            ),
 
-        html.Br(), html.Br(),
+            # 3. Year Filter
+            html.Label("Year:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-year',
+                options=[{'label': y, 'value': y} for y in years],
+                multi=True,
+                placeholder="Select Year(s)...",
+                style={'marginBottom': '10px'}
+            ),
 
-        # Requirement: Central "Generate Report" Button 
-        html.Button('Generate Report', id='btn-generate', n_clicks=0, style={'fontSize': '16px', 'padding': '10px'})
-    
-    ], style={'width': '25%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '20px', 'backgroundColor': '#f9f9f9'}),
+            # 4. Vehicle Type Filter
+            html.Label("Vehicle Type:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-vehicle',
+                options=[{'label': v, 'value': v} for v in vehicle_types],
+                multi=True,
+                placeholder="e.g. Sedan, Taxi...",
+                style={'marginBottom': '10px'}
+            ),
 
-    # --- VISUALIZATION PANEL ---
-    html.Div([
-        html.H3("Dashboard Analytics"),
+            # 5. Contributing Factor Filter
+            html.Label("Contributing Factor:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-factor',
+                options=[{'label': f, 'value': f} for f in factors],
+                multi=True,
+                placeholder="e.g. Alcohol, Speeding...",
+                style={'marginBottom': '10px'}
+            ),
+
+            # 6. Severity Filter
+            html.Label("Collision Severity:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-severity',
+                options=[{'label': s, 'value': s} for s in severity_options],
+                multi=True,
+                placeholder="Select Severity...",
+                style={'marginBottom': '20px'}
+            ),
+
+            # Generate Button
+            html.Button(
+                'Generate Report', 
+                id='btn-generate', 
+                n_clicks=0, 
+                style={
+                    'width': '100%', 'backgroundColor': '#007bff', 'color': 'white', 
+                    'border': 'none', 'padding': '12px', 'fontSize': '16px', 
+                    'cursor': 'pointer', 'borderRadius': '5px'
+                }
+            )
         
-        # Placeholders for your charts [cite: 66]
-        dcc.Graph(id='chart-1'),
-        dcc.Graph(id='chart-2')
-        
-    ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px'})
+        ], style={'width': '25%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '20px', 'backgroundColor': '#f1f1f1', 'borderRadius': '10px'}),
+
+        # --- VISUALIZATION PANEL (Right Side) ---
+        html.Div([
+            html.H3("Dashboard Analytics"),
+            
+            # Key Metrics Row
+            html.Div(id='stats-container', style={'display': 'flex', 'justifyContent': 'space-around', 'marginBottom': '20px'}),
+
+            dcc.Graph(id='chart-1'),
+            html.Br(),
+            dcc.Graph(id='chart-2')
+            
+        ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px', 'verticalAlign': 'top'})
+    ], style={'display': 'flex', 'flexWrap': 'wrap'})
 ])
 
 # 4. Define the Callback
 @app.callback(
     [Output('chart-1', 'figure'),
-     Output('chart-2', 'figure')],
+     Output('chart-2', 'figure'),
+     Output('stats-container', 'children')],
     [Input('btn-generate', 'n_clicks')],
     [State('filter-borough', 'value'),
      State('filter-year', 'value'),
+     State('filter-vehicle', 'value'),
+     State('filter-factor', 'value'),
+     State('filter-severity', 'value'),
      State('filter-search', 'value')]
 )
-def update_report(n_clicks, selected_boroughs, selected_years, search_query):
+def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, sel_severity, search_query):
     if n_clicks == 0:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
 
-    # --- DEBUG PRINT 1 ---
-    print(f"\n--- GENERATING REPORT (Click {n_clicks}) ---")
-    print(f"Total rows in dataset: {len(df)}")
-    print(f"Filters -> Boroughs: {selected_boroughs}, Years: {selected_years}, Search: '{search_query}'")
-
+    print(f"--- GENERATING REPORT ---")
     dff = df.copy()
 
-    # 1. Filter by Borough
-    if selected_boroughs:
-        dff = dff[dff['BOROUGH'].isin(selected_boroughs)]
-        print(f"Rows after Borough filter: {len(dff)}")
+    # --- APPLY DROPDOWN FILTERS ---
+    if sel_boroughs:
+        dff = dff[dff['BOROUGH'].isin(sel_boroughs)]
+    
+    if sel_years:
+        dff = dff[dff['CRASH_DATETIME'].dt.year.isin(sel_years)]
 
-    # 2. Filter by Year
-    if selected_years:
-        # Ensure column is datetime
-        if not pd.api.types.is_datetime64_any_dtype(dff['CRASH_DATETIME']):
-             dff['CRASH_DATETIME'] = pd.to_datetime(dff['CRASH_DATETIME'], errors='coerce')
+    if sel_vehicles:
+        dff = dff[dff['VEHICLE TYPE CODE 1'].isin(sel_vehicles)]
+
+    if sel_factors:
+        dff = dff[dff['CONTRIBUTING FACTOR VEHICLE 1'].isin(sel_factors)]
+
+    if sel_severity:
+        conditions = []
+        if 'Fatality' in sel_severity:
+            conditions.append(dff['NUMBER OF PERSONS KILLED'] > 0)
+        if 'Injury' in sel_severity:
+            conditions.append(dff['NUMBER OF PERSONS INJURED'] > 0)
+        if 'Property Damage Only' in sel_severity:
+            conditions.append((dff['NUMBER OF PERSONS KILLED'] == 0) & (dff['NUMBER OF PERSONS INJURED'] == 0))
         
-        dff = dff[dff['CRASH_DATETIME'].dt.year.isin(selected_years)]
-        print(f"Rows after Year filter: {len(dff)}")
+        if conditions:
+            final_condition = conditions[0]
+            for cond in conditions[1:]:
+                final_condition = final_condition | cond
+            dff = dff[final_condition]
 
-    # 3. Filter by Search Query
+    # --- APPLY SEARCH QUERY (FIXED FOR MEMORY) ---
     if search_query:
-        # EXPANDED SEARCH: Check more columns for better results
-        # We verify if the column exists before searching to prevent errors
-        search_cols = [c for c in ['BOROUGH', 'ON STREET NAME', 'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1'] if c in dff.columns]
+        terms = search_query.split()
         
-        mask = dff[search_cols].apply(lambda x: x.astype(str).str.contains(search_query, case=False, na=False)).any(axis=1)
-        dff = dff[mask]
-        print(f"Rows after Search filter: {len(dff)}")
-
-    # --- DEBUG PRINT FINAL ---
-    print(f"FINAL rows to plot: {len(dff)}")
+        search_cols = [
+            'BOROUGH', 
+            'ON STREET NAME', 
+            'CONTRIBUTING FACTOR VEHICLE 1', 
+            'VEHICLE TYPE CODE 1',
+            'DATE_STR'
+        ]
+        
+        # Filter: ALL terms must appear in the row
+        for term in terms:
+            # Initialize a mask of all False (safe initialization)
+            term_mask = None
+            
+            for col in search_cols:
+                if col not in dff.columns:
+                    continue
+                
+                try:
+                    # MEMORY FIX: Process ONE column at a time.
+                    # We access the column, convert to string, check contains, then discard the string object.
+                    # This prevents allocating a massive matrix of strings for all columns at once.
+                    col_series = dff[col].astype(str)
+                    
+                    # Check match
+                    col_matches = col_series.str.contains(term, case=False, na=False)
+                    
+                    if term_mask is None:
+                        term_mask = col_matches
+                    else:
+                        # Logical OR: If it matches in this column OR previous columns, keep the row
+                        term_mask = term_mask | col_matches
+                        
+                except Exception as e:
+                    print(f"Skipping column {col} due to error: {e}")
+                    continue
+            
+            # Apply the mask for this specific search term
+            if term_mask is not None:
+                dff = dff[term_mask]
 
     if dff.empty:
-        print("!!! RESULT IS EMPTY - RETURNING BLANK CHARTS !!!")
-        # Return a text annotation saying "No Data"
-        fig_empty = px.bar(title="No data found matching these filters.")
-        return fig_empty, fig_empty
+        empty_fig = px.bar(title="No data matches your filters.")
+        return empty_fig, empty_fig, html.Div("No Data Found")
 
-    # 4. Generate Visualizations
-    # Bar Chart: Crash Count by Borough
-    dff_counts = dff['BOROUGH'].value_counts().reset_index()
-    dff_counts.columns = ['BOROUGH', 'Count']
-    fig1 = px.bar(dff_counts, x='BOROUGH', y='Count', title="Crashes by Borough")
+    # --- GENERATE CHARTS ---
+    
+    if sel_boroughs and len(sel_boroughs) == 1:
+        group_col = 'CONTRIBUTING FACTOR VEHICLE 1'
+        title = f"Top Contributing Factors in {sel_boroughs[0]}"
+    else:
+        group_col = 'BOROUGH'
+        title = "Crashes by Borough"
 
-    # Map: Crash Locations
-    # Limit to 1000 points for speed
-    fig2 = px.scatter_mapbox(dff.head(1000), lat="LATITUDE", lon="LONGITUDE", zoom=10, title="Crash Locations (Sample)")
+    dff_counts = dff[group_col].value_counts().reset_index().head(15)
+    dff_counts.columns = [group_col, 'Count']
+    fig1 = px.bar(dff_counts, x=group_col, y='Count', title=title, text_auto=True)
+    fig1.update_layout(xaxis={'categoryorder':'total descending'})
+
+    # Chart 2: Map
+    # Limit to 1000 points to save browser memory
+    map_data = dff.dropna(subset=['LATITUDE', 'LONGITUDE']).head(1000)
+    fig2 = px.scatter_mapbox(
+        map_data, 
+        lat="LATITUDE", 
+        lon="LONGITUDE", 
+        zoom=10, 
+        title=f"Crash Locations ({len(map_data)} displayed)",
+        color_discrete_sequence=["red"]
+    )
     fig2.update_layout(mapbox_style="open-street-map")
 
-    return fig1, fig2
+    # Stats
+    total_crashes = len(dff)
+    total_injured = dff['NUMBER OF PERSONS INJURED'].sum()
+    total_killed = dff['NUMBER OF PERSONS KILLED'].sum()
 
-# 5. Run the App
+    stats = [
+        html.Div([html.H4("Total Crashes"), html.P(f"{total_crashes:,}")]),
+        html.Div([html.H4("Total Injured"), html.P(f"{total_injured:,}")]),
+        html.Div([html.H4("Total Killed"), html.P(f"{total_killed:,}")])
+    ]
+
+    return fig1, fig2, stats
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True)git
