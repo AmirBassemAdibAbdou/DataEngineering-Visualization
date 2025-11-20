@@ -15,8 +15,8 @@ for col in categorical_cols:
         df[col] = df[col].astype('category')
 
 # Pre-processing for Dropdowns (Extract unique values for filters)
-boroughs = df['BOROUGH'].unique().tolist()
-# --- FIX START ---
+boroughs = sorted(df['BOROUGH'].dropna().unique().tolist())
+
 # Extract years - use CRASH YEAR if available, otherwise parse from CRASH_DATETIME
 if 'CRASH YEAR' in df.columns:
     years = sorted(df['CRASH YEAR'].dropna().astype(int).unique())
@@ -26,50 +26,129 @@ else:
     df['CRASH_DATE'] = df['CRASH_DATETIME'].dt.date
     years = sorted(df['CRASH_DATETIME'].dt.year.dropna().astype(int).unique())
 
+# Vehicle Types (Limit to top 200 for performance)
+vehicle_types = df['VEHICLE TYPE CODE 1'].dropna().astype(str).unique().tolist()
+vehicle_types = sorted(vehicle_types)[:200]
+
+# Contributing Factors
+factors = df['CONTRIBUTING FACTOR VEHICLE 1'].dropna().astype(str).unique().tolist()
+factors = sorted(factors)
+
+# Collision Severity Options
+severity_options = ['Fatality', 'Injury', 'Property Damage Only']
+
 print(f"Data loaded successfully! {len(df):,} rows, {len(boroughs)} boroughs, years {min(years)}-{max(years)}")
-# --- FIX END ---
 # 2. Initialize the App
 app = dash.Dash(__name__)
-server = app.server # Needed for Vercel/Heroku deployment later 
+server = app.server 
 
 # 3. Define the Layout
 app.layout = html.Div([
-    html.H1("NYC Motor Vehicle Collisions Report", style={'textAlign': 'center'}),
+    html.H1("NYC Motor Vehicle Collisions Report", style={'textAlign': 'center', 'fontFamily': 'Arial'}),
 
-    # --- CONTROL PANEL ---
     html.Div([
-        html.H3("Filters"),
-        
-        # Requirement: Multiple dropdown filters [cite: 63]
-        html.Label("Select Borough:"),
-        dcc.Dropdown(
-            id='filter-borough',
-            options=[{'label': b, 'value': b} for b in boroughs],
-            multi=True, # Allow selecting multiple boroughs
-            placeholder="Select Borough(s)..."
-        ),
+        # --- CONTROL PANEL (Left Side) ---
+        html.Div([
+            html.H3("Filters", style={'borderBottom': '2px solid #007bff', 'paddingBottom': '10px'}),
+            
+            # 1. Search Box
+            html.Label("Global Search:", style={'fontWeight': 'bold'}),
+            dcc.Input(
+                id='filter-search', 
+                type='text', 
+                placeholder='e.g. "Brooklyn 2022"', 
+                style={'width': '100%', 'padding': '8px', 'marginBottom': '15px'}
+            ),
 
-        html.Label("Select Year:"),
-        dcc.Dropdown(
-            id='filter-year',
-            options=[{'label': y, 'value': y} for y in years],
-            multi=True,
-            placeholder="Select Year(s)..."
-        ),
-        
-        # Add the other required dropdowns here: Vehicle Type, Contributing Factor, Injury Type [cite: 63]
-        
-        # Requirement: Search Mode 
-        html.Label("Search (e.g., 'Pedestrian'):"),
-        dcc.Input(id='filter-search', type='text', placeholder='Type query...', style={'width': '100%'}),
+            # 2. Borough Filter
+            html.Label("Borough:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-borough',
+                options=[{'label': b, 'value': b} for b in boroughs],
+                multi=True,
+                placeholder="Select Borough(s)...",
+                style={'marginBottom': '10px'}
+            ),
 
-        html.Br(), html.Br(),
+            # 3. Year Filter
+            html.Label("Year:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-year',
+                options=[{'label': y, 'value': y} for y in years],
+                multi=True,
+                placeholder="Select Year(s)...",
+                style={'marginBottom': '10px'}
+            ),
 
-        # Requirement: Central "Generate Report" Button 
-        html.Button('Generate Report', id='btn-generate', n_clicks=0, style={'fontSize': '16px', 'padding': '10px'})
-    
-    ], style={'width': '25%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '20px', 'backgroundColor': '#f9f9f9'}),
+            # 4. Vehicle Type Filter
+            html.Label("Vehicle Type:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-vehicle',
+                options=[{'label': v, 'value': v} for v in vehicle_types],
+                multi=True,
+                placeholder="e.g. Sedan, Taxi...",
+                style={'marginBottom': '10px'}
+            ),
 
+            # 5. Contributing Factor Filter
+            html.Label("Contributing Factor:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-factor',
+                options=[{'label': f, 'value': f} for f in factors],
+                multi=True,
+                placeholder="e.g. Alcohol, Speeding...",
+                style={'marginBottom': '10px'}
+            ),
+
+            # 6. Severity Filter
+            html.Label("Collision Severity:", style={'fontWeight': 'bold'}),
+            dcc.Dropdown(
+                id='filter-severity',
+                options=[{'label': s, 'value': s} for s in severity_options],
+                multi=True,
+                placeholder="Select Severity...",
+                style={'marginBottom': '20px'}
+            ),
+
+            # Generate Button
+            html.Button(
+                'Generate Report', 
+                id='btn-generate', 
+                n_clicks=0, 
+                style={
+                    'width': '100%', 'backgroundColor': '#007bff', 'color': 'white', 
+                    'border': 'none', 'padding': '12px', 'fontSize': '16px', 
+                    'cursor': 'pointer', 'borderRadius': '5px'
+                }
+            )
+        ], style={'width': '25%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '20px', 'backgroundColor': '#f1f1f1', 'borderRadius': '10px'}),
+
+        # --- VISUALIZATION PANEL (Right Side) ---
+        html.Div([
+            html.H3("Dashboard Analytics"),
+            
+            # Grid layout for multiple chart types
+            html.Div([
+                # Row 1: Bar Chart and Line Chart
+                html.Div([
+                    dcc.Graph(id='chart-bar', style={'display': 'inline-block', 'width': '48%'}),
+                    dcc.Graph(id='chart-line', style={'display': 'inline-block', 'width': '48%'})
+                ], style={'width': '100%'}),
+                
+                # Row 2: Heatmap and Pie Chart
+                html.Div([
+                    dcc.Graph(id='chart-heatmap', style={'display': 'inline-block', 'width': '48%'}),
+                    dcc.Graph(id='chart-pie', style={'display': 'inline-block', 'width': '48%'})
+                ], style={'width': '100%', 'marginTop': '20px'}),
+                
+                # Row 3: Map (full width)
+                html.Div([
+                    dcc.Graph(id='chart-map', style={'width': '100%'})
+                ], style={'width': '100%', 'marginTop': '20px'})
+            ])
+            
+        ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px', 'verticalAlign': 'top'})
+    ], style={'display': 'flex', 'flexWrap': 'wrap'})
     # --- VISUALIZATION PANEL ---
     html.Div([
         html.H3("Dashboard Analytics"),
@@ -107,9 +186,12 @@ app.layout = html.Div([
     [Input('btn-generate', 'n_clicks')],
     [State('filter-borough', 'value'),
      State('filter-year', 'value'),
+     State('filter-vehicle', 'value'),
+     State('filter-factor', 'value'),
+     State('filter-severity', 'value'),
      State('filter-search', 'value')]
 )
-def update_report(n_clicks, selected_boroughs, selected_years, search_query):
+def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, sel_severity, search_query):
     if n_clicks == 0:
         # Return empty placeholder charts on initial load
         fig_empty = px.bar(title="Click 'Generate Report' to view visualizations")
@@ -301,6 +383,5 @@ def update_report(n_clicks, selected_boroughs, selected_years, search_query):
 
     return fig_bar, fig_line, fig_heatmap, fig_pie, fig_map
 
-# 5. Run the App
 if __name__ == '__main__':
     app.run(debug=True)
