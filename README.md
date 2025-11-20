@@ -75,11 +75,3 @@ Web Framework & Visualization: [e.g., Dash, Plotly, React, Flask]
 
 
 Deployment: [e.g., Vercel, Render, Heroku]
-
-
-Team member contributions:
-Amir Bassem First EDA on both datasets, some cleaning and Dash setup
-Sandra George: Preintegration data cleaning
-Anthony Shady: Refind cleaning
-Ali Alaa: more cleaning
-Youssef Abdelmalak: 

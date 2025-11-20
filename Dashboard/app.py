@@ -149,6 +149,31 @@ app.layout = html.Div([
             
         ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px', 'verticalAlign': 'top'})
     ], style={'display': 'flex', 'flexWrap': 'wrap'})
+    # --- VISUALIZATION PANEL ---
+    html.Div([
+        html.H3("Dashboard Analytics"),
+        
+        # Grid layout for multiple chart types
+        html.Div([
+            # Row 1: Bar Chart and Line Chart
+            html.Div([
+                dcc.Graph(id='chart-bar', style={'display': 'inline-block', 'width': '48%'}),
+                dcc.Graph(id='chart-line', style={'display': 'inline-block', 'width': '48%'})
+            ], style={'width': '100%'}),
+            
+            # Row 2: Heatmap and Pie Chart
+            html.Div([
+                dcc.Graph(id='chart-heatmap', style={'display': 'inline-block', 'width': '48%'}),
+                dcc.Graph(id='chart-pie', style={'display': 'inline-block', 'width': '48%'})
+            ], style={'width': '100%', 'marginTop': '20px'}),
+            
+            # Row 3: Map (full width)
+            html.Div([
+                dcc.Graph(id='chart-map', style={'width': '100%'})
+            ], style={'width': '100%', 'marginTop': '20px'})
+        ])
+        
+    ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px'})
 ])
 
 # 4. Define the Callback - Returns all chart types
@@ -175,26 +200,26 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
     # --- DEBUG PRINT 1 ---
     print(f"\n--- GENERATING REPORT (Click {n_clicks}) ---")
     print(f"Total rows in dataset: {len(df)}")
-    print(f"Filters -> Boroughs: {sel_boroughs}, Years: {sel_years}, Search: '{search_query}'")
+    print(f"Filters -> Boroughs: {selected_boroughs}, Years: {selected_years}, Search: '{search_query}'")
 
     # Build filter mask incrementally to avoid multiple copies
     mask = pd.Series(True, index=df.index)
     
     # 1. Filter by Borough
-    if sel_boroughs:
-        mask = mask & df['BOROUGH'].isin(sel_boroughs)
+    if selected_boroughs:
+        mask = mask & df['BOROUGH'].isin(selected_boroughs)
         print(f"Rows after Borough filter: {mask.sum():,}")
 
     # 2. Filter by Year
-    if sel_years:
+    if selected_years:
         # Use CRASH YEAR column if available (more efficient), otherwise use CRASH_DATETIME
         if 'CRASH YEAR' in df.columns:
-            mask = mask & df['CRASH YEAR'].isin(sel_years)
+            mask = mask & df['CRASH YEAR'].isin(selected_years)
         else:
             # Fallback to datetime parsing
             if not pd.api.types.is_datetime64_any_dtype(df['CRASH_DATETIME']):
                  df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce')
-            mask = mask & df['CRASH_DATETIME'].dt.year.isin(sel_years)
+            mask = mask & df['CRASH_DATETIME'].dt.year.isin(selected_years)
         print(f"Rows after Year filter: {mask.sum():,}")
 
     # Apply borough and year filters first to reduce dataset size
