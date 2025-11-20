@@ -3,29 +3,10 @@ from dash import dcc, html, Input, Output, State
 import pandas as pd
 import plotly.express as px
 
-# 1. Load the Dataset - Memory Efficient Loading
-# Only load columns we actually need to reduce memory usage
-# Based on actual parquet schema (no LATITUDE/LONGITUDE available)
-columns_needed = [
-    'BOROUGH', 'CRASH_DATETIME', 'CRASH YEAR', 'CRASH HOUR',
-    'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1',
-    'NUMBER OF PERSONS INJURED', 'NUMBER OF PERSONS KILLED',
-    'PERSON_TYPE', 'PERSON_INJURY'
-]
-
+# 1. Load the Dataset
 print("Loading parquet file (this may take a moment)...")
-try:
-    # Try to load only needed columns first
-    df = pd.read_parquet('crashes.parquet', columns=columns_needed)
-    print(f"Loaded {len(df):,} rows with {len(df.columns)} columns")
-except Exception as e:
-    print(f"Error loading with column selection: {e}")
-    print("Trying to load full file and then subset...")
-    # Fallback: load full file but immediately subset
-    df_full = pd.read_parquet('crashes.parquet')
-    df = df_full[columns_needed].copy()
-    del df_full  # Free memory
-    print(f"Loaded and subsetted to {len(df):,} rows")
+df = pd.read_parquet('crashes.parquet', engine='pyarrow', dtype_backend='pyarrow')
+print(f"Loaded {len(df):,} rows with {len(df.columns)} columns")
 
 # Optimize dtypes to save memory
 categorical_cols = ['BOROUGH', 'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1', 'PERSON_TYPE', 'PERSON_INJURY']
