@@ -4,23 +4,31 @@ import pandas as pd
 import plotly.express as px
 
 # 1. Load the Dataset
-# We use PyArrow for the whole dataframe to save memory
+print("Loading parquet file (this may take a moment)...")
 df = pd.read_parquet('crashes.parquet', engine='pyarrow', dtype_backend='pyarrow')
+print(f"Loaded {len(df):,} rows with {len(df.columns)} columns")
 
-# --- PRE-PROCESSING ---
+# Optimize dtypes to save memory
+categorical_cols = ['BOROUGH', 'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1', 'PERSON_TYPE', 'PERSON_INJURY']
+for col in categorical_cols:
+    if col in df.columns:
+        df[col] = df[col].astype('category')
 
-# A. Handle Dates
-# We convert the date column to standard numpy 'datetime64[ns]' to avoid Windows TimeZone errors
-df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce').astype('datetime64[ns]')
-df['DATE_STR'] = df['CRASH_DATETIME'].dt.strftime('%Y-%m-%d')
-
-# B. Extract Unique Values for Dropdowns
+# Pre-processing for Dropdowns (Extract unique values for filters)
 boroughs = sorted(df['BOROUGH'].dropna().unique().tolist())
-years = sorted(df['CRASH_DATETIME'].dt.year.dropna().astype(int).unique())
+
+# Extract years - use CRASH YEAR if available, otherwise parse from CRASH_DATETIME
+if 'CRASH YEAR' in df.columns:
+    years = sorted(df['CRASH YEAR'].dropna().astype(int).unique())
+else:
+    # Fallback: parse from CRASH_DATETIME
+    df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce')
+    df['CRASH_DATE'] = df['CRASH_DATETIME'].dt.date
+    years = sorted(df['CRASH_DATETIME'].dt.year.dropna().astype(int).unique())
 
 # Vehicle Types (Limit to top 200 for performance)
 vehicle_types = df['VEHICLE TYPE CODE 1'].dropna().astype(str).unique().tolist()
-vehicle_types = sorted(vehicle_types)[:200] 
+vehicle_types = sorted(vehicle_types)[:200]
 
 # Contributing Factors
 factors = df['CONTRIBUTING FACTOR VEHICLE 1'].dropna().astype(str).unique().tolist()
@@ -29,6 +37,7 @@ factors = sorted(factors)
 # Collision Severity Options
 severity_options = ['Fatality', 'Injury', 'Property Damage Only']
 
+print(f"Data loaded successfully! {len(df):,} rows, {len(boroughs)} boroughs, years {min(years)}-{max(years)}")
 # 2. Initialize the App
 app = dash.Dash(__name__)
 server = app.server 
@@ -112,29 +121,43 @@ app.layout = html.Div([
                     'cursor': 'pointer', 'borderRadius': '5px'
                 }
             )
-        
         ], style={'width': '25%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '20px', 'backgroundColor': '#f1f1f1', 'borderRadius': '10px'}),
 
         # --- VISUALIZATION PANEL (Right Side) ---
         html.Div([
             html.H3("Dashboard Analytics"),
             
-            # Key Metrics Row
-            html.Div(id='stats-container', style={'display': 'flex', 'justifyContent': 'space-around', 'marginBottom': '20px'}),
-
-            dcc.Graph(id='chart-1'),
-            html.Br(),
-            dcc.Graph(id='chart-2')
+            # Grid layout for multiple chart types
+            html.Div([
+                # Row 1: Bar Chart and Line Chart
+                html.Div([
+                    dcc.Graph(id='chart-bar', style={'display': 'inline-block', 'width': '48%'}),
+                    dcc.Graph(id='chart-line', style={'display': 'inline-block', 'width': '48%'})
+                ], style={'width': '100%'}),
+                
+                # Row 2: Heatmap and Pie Chart
+                html.Div([
+                    dcc.Graph(id='chart-heatmap', style={'display': 'inline-block', 'width': '48%'}),
+                    dcc.Graph(id='chart-pie', style={'display': 'inline-block', 'width': '48%'})
+                ], style={'width': '100%', 'marginTop': '20px'}),
+                
+                # Row 3: Map (full width)
+                html.Div([
+                    dcc.Graph(id='chart-map', style={'width': '100%'})
+                ], style={'width': '100%', 'marginTop': '20px'})
+            ])
             
         ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px', 'verticalAlign': 'top'})
     ], style={'display': 'flex', 'flexWrap': 'wrap'})
 ])
 
-# 4. Define the Callback
+# 4. Define the Callback - Returns all chart types
 @app.callback(
-    [Output('chart-1', 'figure'),
-     Output('chart-2', 'figure'),
-     Output('stats-container', 'children')],
+    [Output('chart-bar', 'figure'),
+     Output('chart-line', 'figure'),
+     Output('chart-heatmap', 'figure'),
+     Output('chart-pie', 'figure'),
+     Output('chart-map', 'figure')],
     [Input('btn-generate', 'n_clicks')],
     [State('filter-borough', 'value'),
      State('filter-year', 'value'),
@@ -145,126 +168,195 @@ app.layout = html.Div([
 )
 def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, sel_severity, search_query):
     if n_clicks == 0:
-        return dash.no_update, dash.no_update, dash.no_update
+        # Return empty placeholder charts on initial load
+        fig_empty = px.bar(title="Click 'Generate Report' to view visualizations")
+        return fig_empty, fig_empty, fig_empty, fig_empty, fig_empty
 
-    print(f"--- GENERATING REPORT ---")
-    dff = df.copy()
+    # --- DEBUG PRINT 1 ---
+    print(f"\n--- GENERATING REPORT (Click {n_clicks}) ---")
+    print(f"Total rows in dataset: {len(df)}")
+    print(f"Filters -> Boroughs: {sel_boroughs}, Years: {sel_years}, Search: '{search_query}'")
 
-    # --- APPLY DROPDOWN FILTERS ---
-    if sel_boroughs:
-        dff = dff[dff['BOROUGH'].isin(sel_boroughs)]
+    # Build filter mask incrementally to avoid multiple copies
+    mask = pd.Series(True, index=df.index)
     
+    # 1. Filter by Borough
+    if sel_boroughs:
+        mask = mask & df['BOROUGH'].isin(sel_boroughs)
+        print(f"Rows after Borough filter: {mask.sum():,}")
+
+    # 2. Filter by Year
     if sel_years:
-        dff = dff[dff['CRASH_DATETIME'].dt.year.isin(sel_years)]
+        # Use CRASH YEAR column if available (more efficient), otherwise use CRASH_DATETIME
+        if 'CRASH YEAR' in df.columns:
+            mask = mask & df['CRASH YEAR'].isin(sel_years)
+        else:
+            # Fallback to datetime parsing
+            if not pd.api.types.is_datetime64_any_dtype(df['CRASH_DATETIME']):
+                 df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce')
+            mask = mask & df['CRASH_DATETIME'].dt.year.isin(sel_years)
+        print(f"Rows after Year filter: {mask.sum():,}")
 
-    if sel_vehicles:
-        dff = dff[dff['VEHICLE TYPE CODE 1'].isin(sel_vehicles)]
-
-    if sel_factors:
-        dff = dff[dff['CONTRIBUTING FACTOR VEHICLE 1'].isin(sel_factors)]
-
-    if sel_severity:
-        conditions = []
-        if 'Fatality' in sel_severity:
-            conditions.append(dff['NUMBER OF PERSONS KILLED'] > 0)
-        if 'Injury' in sel_severity:
-            conditions.append(dff['NUMBER OF PERSONS INJURED'] > 0)
-        if 'Property Damage Only' in sel_severity:
-            conditions.append((dff['NUMBER OF PERSONS KILLED'] == 0) & (dff['NUMBER OF PERSONS INJURED'] == 0))
-        
-        if conditions:
-            final_condition = conditions[0]
-            for cond in conditions[1:]:
-                final_condition = final_condition | cond
-            dff = dff[final_condition]
-
-    # --- APPLY SEARCH QUERY (FIXED FOR MEMORY) ---
+    # Apply borough and year filters first to reduce dataset size
+    dff = df[mask].copy()
+    
+    # 3. Filter by Search Query (apply on already-filtered data to save memory)
     if search_query:
-        terms = search_query.split()
+        # EXPANDED SEARCH: Check more columns for better results
+        # We verify if the column exists before searching to prevent errors
+        search_cols = [c for c in ['BOROUGH', 'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1', 'PERSON_TYPE', 'PERSON_INJURY'] if c in dff.columns]
         
-        search_cols = [
-            'BOROUGH', 
-            'ON STREET NAME', 
-            'CONTRIBUTING FACTOR VEHICLE 1', 
-            'VEHICLE TYPE CODE 1',
-            'DATE_STR'
-        ]
+        # Build search mask column by column on the filtered subset
+        search_mask = pd.Series(False, index=dff.index)
+        for col in search_cols:
+            # Convert to string and search (now working on smaller filtered dataset)
+            col_mask = dff[col].astype(str).str.contains(search_query, case=False, na=False)
+            search_mask = search_mask | col_mask
         
-        # Filter: ALL terms must appear in the row
-        for term in terms:
-            # Initialize a mask of all False (safe initialization)
-            term_mask = None
-            
-            for col in search_cols:
-                if col not in dff.columns:
-                    continue
-                
-                try:
-                    # MEMORY FIX: Process ONE column at a time.
-                    # We access the column, convert to string, check contains, then discard the string object.
-                    # This prevents allocating a massive matrix of strings for all columns at once.
-                    col_series = dff[col].astype(str)
-                    
-                    # Check match
-                    col_matches = col_series.str.contains(term, case=False, na=False)
-                    
-                    if term_mask is None:
-                        term_mask = col_matches
-                    else:
-                        # Logical OR: If it matches in this column OR previous columns, keep the row
-                        term_mask = term_mask | col_matches
-                        
-                except Exception as e:
-                    print(f"Skipping column {col} due to error: {e}")
-                    continue
-            
-            # Apply the mask for this specific search term
-            if term_mask is not None:
-                dff = dff[term_mask]
+        dff = dff[search_mask].copy()
+        print(f"Rows after Search filter: {len(dff):,}")
+
+    # --- DEBUG PRINT FINAL ---
+    print(f"FINAL rows to plot: {len(dff)}")
 
     if dff.empty:
-        empty_fig = px.bar(title="No data matches your filters.")
-        return empty_fig, empty_fig, html.Div("No Data Found")
+        print("!!! RESULT IS EMPTY - RETURNING BLANK CHARTS !!!")
+        fig_empty = px.bar(title="No data found matching these filters.")
+        return fig_empty, fig_empty, fig_empty, fig_empty, fig_empty
 
-    # --- GENERATE CHARTS ---
+    # 4. Generate All Visualizations with Interactivity
     
-    if sel_boroughs and len(sel_boroughs) == 1:
-        group_col = 'CONTRIBUTING FACTOR VEHICLE 1'
-        title = f"Top Contributing Factors in {sel_boroughs[0]}"
-    else:
-        group_col = 'BOROUGH'
-        title = "Crashes by Borough"
-
-    dff_counts = dff[group_col].value_counts().reset_index().head(15)
-    dff_counts.columns = [group_col, 'Count']
-    fig1 = px.bar(dff_counts, x=group_col, y='Count', title=title, text_auto=True)
-    fig1.update_layout(xaxis={'categoryorder':'total descending'})
-
-    # Chart 2: Map
-    # Limit to 1000 points to save browser memory
-    map_data = dff.dropna(subset=['LATITUDE', 'LONGITUDE']).head(1000)
-    fig2 = px.scatter_mapbox(
-        map_data, 
-        lat="LATITUDE", 
-        lon="LONGITUDE", 
-        zoom=10, 
-        title=f"Crash Locations ({len(map_data)} displayed)",
-        color_discrete_sequence=["red"]
+    # 1. BAR CHART: Crash Count by Borough
+    dff_counts = dff['BOROUGH'].value_counts().reset_index()
+    dff_counts.columns = ['BOROUGH', 'Count']
+    fig_bar = px.bar(
+        dff_counts, 
+        x='BOROUGH', 
+        y='Count', 
+        title="Crashes by Borough (Bar Chart)",
+        labels={'Count': 'Number of Crashes', 'BOROUGH': 'Borough'},
+        color='Count',
+        color_continuous_scale='Blues'
     )
-    fig2.update_layout(mapbox_style="open-street-map")
+    fig_bar.update_layout(
+        hovermode='x unified',
+        xaxis={'categoryorder': 'total descending'},
+        showlegend=False
+    )
+    fig_bar.update_traces(hovertemplate='<b>%{x}</b><br>Count: %{y}<extra></extra>')
+    
+    # 2. LINE CHART: Crashes by Hour of Day
+    if 'CRASH HOUR' in dff.columns:
+        hourly_counts = dff['CRASH HOUR'].value_counts().sort_index().reset_index()
+        hourly_counts.columns = ['Hour', 'Count']
+        fig_line = px.line(
+            hourly_counts, 
+            x='Hour', 
+            y='Count', 
+            title="Crashes by Hour of Day (Line Chart)",
+            labels={'Count': 'Number of Crashes', 'Hour': 'Hour of Day (0-23)'},
+            markers=True
+        )
+        fig_line.update_traces(
+            line=dict(width=3), 
+            marker=dict(size=8),
+            hovertemplate='<b>Hour: %{x}</b><br>Crashes: %{y}<extra></extra>'
+        )
+        fig_line.update_xaxes(dtick=2)
+        fig_line.update_layout(
+            hovermode='x unified',
+            xaxis_title='Hour of Day (0-23)',
+            yaxis_title='Number of Crashes'
+        )
+    else:
+        fig_line = px.line(title="No hour data available")
+    
+    # 3. HEATMAP: Borough x Hour of Day
+    if 'CRASH HOUR' in dff.columns and 'BOROUGH' in dff.columns:
+        # Create pivot table for proper heatmap
+        heatmap_data = dff.groupby(['BOROUGH', 'CRASH HOUR']).size().reset_index(name='Count')
+        heatmap_pivot = heatmap_data.pivot(index='BOROUGH', columns='CRASH HOUR', values='Count').fillna(0)
+        
+        # Use imshow for a cleaner heatmap visualization
+        fig_heatmap = px.imshow(
+            heatmap_pivot.values,
+            x=heatmap_pivot.columns,
+            y=heatmap_pivot.index,
+            labels=dict(x="Hour of Day", y="Borough", color="Number of Crashes"),
+            title="Crash Intensity: Borough x Hour (Heatmap)",
+            color_continuous_scale='YlOrRd',
+            aspect='auto'
+        )
+        fig_heatmap.update_xaxes(dtick=2)
+        fig_heatmap.update_layout(
+            xaxis_title='Hour of Day (0-23)',
+            yaxis_title='Borough',
+            height=400
+        )
+        # Update hover template to show actual values
+        fig_heatmap.update_traces(
+            hovertemplate='<b>Borough: %{y}</b><br>Hour: %{x}<br>Crashes: %{z:.0f}<extra></extra>'
+        )
+    else:
+        fig_heatmap = px.imshow([[0]], title="No data available for heatmap")
+    
+    # 4. PIE CHART: Person Injury Types Distribution
+    if 'PERSON_INJURY' in dff.columns:
+        injury_counts = dff['PERSON_INJURY'].value_counts().reset_index()
+        injury_counts.columns = ['Injury_Type', 'Count']
+        fig_pie = px.pie(
+            injury_counts,
+            values='Count',
+            names='Injury_Type',
+            title="Distribution of Injury Types (Pie Chart)",
+            hole=0.4
+        )
+        fig_pie.update_traces(
+            textposition='inside', 
+            textinfo='percent+label',
+            hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>'
+        )
+    else:
+        # Fallback: Vehicle Type distribution
+        if 'VEHICLE TYPE CODE 1' in dff.columns:
+            vehicle_counts = dff['VEHICLE TYPE CODE 1'].value_counts().head(8).reset_index()
+            vehicle_counts.columns = ['Vehicle_Type', 'Count']
+            fig_pie = px.pie(
+                vehicle_counts,
+                values='Count',
+                names='Vehicle_Type',
+                title="Top Vehicle Types Involved (Pie Chart)",
+                hole=0.4
+            )
+            fig_pie.update_traces(
+                textposition='inside', 
+                textinfo='percent+label',
+                hovertemplate='<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>'
+            )
+        else:
+            fig_pie = px.pie(title="No data available for pie chart")
+    
+    # 5. MAP: Borough Distribution (since lat/lon not available)
+    borough_counts = dff['BOROUGH'].value_counts().reset_index()
+    borough_counts.columns = ['BOROUGH', 'Count']
+    # Create a choropleth-style visualization using borough data
+    fig_map = px.bar(
+        borough_counts,
+        x='BOROUGH',
+        y='Count',
+        title="Crashes by Borough (Geographic Distribution)",
+        labels={'Count': 'Number of Crashes'},
+        color='Count',
+        color_continuous_scale='Blues'
+    )
+    fig_map.update_layout(
+        hovermode='x unified',
+        xaxis_title='Borough',
+        yaxis_title='Number of Crashes'
+    )
+    fig_map.update_traces(hovertemplate='<b>%{x}</b><br>Count: %{y}<extra></extra>')
 
-    # Stats
-    total_crashes = len(dff)
-    total_injured = dff['NUMBER OF PERSONS INJURED'].sum()
-    total_killed = dff['NUMBER OF PERSONS KILLED'].sum()
-
-    stats = [
-        html.Div([html.H4("Total Crashes"), html.P(f"{total_crashes:,}")]),
-        html.Div([html.H4("Total Injured"), html.P(f"{total_injured:,}")]),
-        html.Div([html.H4("Total Killed"), html.P(f"{total_killed:,}")])
-    ]
-
-    return fig1, fig2, stats
+    return fig_bar, fig_line, fig_heatmap, fig_pie, fig_map
 
 if __name__ == '__main__':
     app.run(debug=True)
