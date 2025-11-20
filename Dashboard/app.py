@@ -267,4 +267,4 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
     return fig1, fig2, stats
 
 if __name__ == '__main__':
-    app.run(debug=True)git
+    app.run(debug=True)
