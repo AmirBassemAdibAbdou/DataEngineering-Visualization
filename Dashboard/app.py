@@ -4,10 +4,26 @@ import pandas as pd
 import plotly.express as px
 import numpy as np
 
-# 1. Load the Dataset
+import os
+
+# 1. Find the file path dynamically (Required for Vercel)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(current_dir, 'crashes.parquet')
+
 print("Loading parquet file (this may take a moment)...")
-df = pd.read_parquet('crashes.parquet', engine='pyarrow', dtype_backend='pyarrow')
+# 2. Read using fastparquet
+df = pd.read_parquet(file_path, engine='fastparquet')
 print(f"Loaded {len(df):,} rows with {len(df.columns)} columns")
+
+# 1. Load the Dataset
+
+#df = pd.read_parquet('crashes.parquet', engine='pyarrow', dtype_backend='pyarrow')
+
+
+df = pd.read_parquet(
+    os.path.join(current_dir, 'your_data.parquet'),
+    engine='fastparquet'
+)
 
 # Optimize dtypes to save memory
 categorical_cols = ['BOROUGH', 'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1', 'PERSON_TYPE', 'PERSON_INJURY']
