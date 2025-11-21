@@ -15,7 +15,8 @@ for col in categorical_cols:
         df[col] = df[col].astype('category')
 
 # Pre-processing for Dropdowns (Extract unique values for filters)
-boroughs = sorted(df['BOROUGH'].dropna().unique().tolist())
+#boroughs = sorted(df['BOROUGH'].dropna().unique().tolist())
+boroughs = sorted(df[df['BOROUGH'] != 'UNKNOWN']['BOROUGH'].dropna().unique().tolist())
 
 # Extract years - use CRASH YEAR if available, otherwise parse from CRASH_DATETIME
 if 'CRASH YEAR' in df.columns:
@@ -142,11 +143,6 @@ app.layout = html.Div([
                     dcc.Graph(id='chart-heatmap', style={'display': 'inline-block', 'width': '48%'}),
                     dcc.Graph(id='chart-pie', style={'display': 'inline-block', 'width': '48%'})
                 ], style={'width': '100%', 'marginTop': '20px'}),
-                
-                # Row 3: Map (full width)
-                html.Div([
-                    dcc.Graph(id='chart-map', style={'width': '100%'})
-                ], style={'width': '100%', 'marginTop': '20px'})
             ])
             
         ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px', 'verticalAlign': 'top'})
@@ -158,8 +154,7 @@ app.layout = html.Div([
     [Output('chart-bar', 'figure'),
      Output('chart-line', 'figure'),
      Output('chart-heatmap', 'figure'),
-     Output('chart-pie', 'figure'),
-     Output('chart-map', 'figure')],
+     Output('chart-pie', 'figure')],
     [Input('btn-generate', 'n_clicks')],
     [State('filter-borough', 'value'),
      State('filter-year', 'value'),
@@ -172,7 +167,7 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
     if n_clicks == 0:
         # Return empty placeholder charts on initial load
         fig_empty = px.bar(title="Click 'Generate Report' to view visualizations")
-        return fig_empty, fig_empty, fig_empty, fig_empty, fig_empty
+        return fig_empty, fig_empty, fig_empty, fig_empty
 
     print(f"\n--- GENERATING REPORT (Click {n_clicks}) ---")
     
@@ -195,6 +190,11 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
     # Apply filters first
     dff = df[mask].copy()
     
+    # Exclude 'UNKNOWN' borough from all visualizations
+    if 'BOROUGH' in dff.columns:
+        dff = dff[dff['BOROUGH'] != 'UNKNOWN']
+        dff['BOROUGH'] = dff['BOROUGH'].cat.remove_unused_categories()
+
     # 3. Filter by Search Query (FIXED LOGIC)
     if search_query:
         # Split query into terms (e.g. "Brooklyn 2022" -> ["Brooklyn", "2022"])
@@ -246,7 +246,7 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
 
     if dff.empty:
         fig_empty = px.bar(title="No data found matching these filters.")
-        return fig_empty, fig_empty, fig_empty, fig_empty, fig_empty
+        return fig_empty, fig_empty, fig_empty, fig_empty
 
     # 4. Generate Visualizations
     
@@ -284,12 +284,7 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
         else:
             fig_pie = px.pie(title="No data available")
     
-    # Map
-    borough_counts = dff['BOROUGH'].value_counts().reset_index()
-    borough_counts.columns = ['BOROUGH', 'Count']
-    fig_map = px.bar(borough_counts, x='BOROUGH', y='Count', title="Geographic Distribution")
-
-    return fig_bar, fig_line, fig_heatmap, fig_pie, fig_map
+    return fig_bar, fig_line, fig_heatmap, fig_pie
 
 if __name__ == '__main__':
     app.run(debug=True)
