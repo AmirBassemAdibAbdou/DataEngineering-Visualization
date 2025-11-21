@@ -2,6 +2,7 @@ import dash
 from dash import dcc, html, Input, Output, State
 import pandas as pd
 import plotly.express as px
+import numpy as np
 
 # 1. Load the Dataset
 print("Loading parquet file (this may take a moment)...")
@@ -28,13 +29,15 @@ else:
     df['CRASH_DATE'] = df['CRASH_DATETIME'].dt.date
     years = sorted(df['CRASH_DATETIME'].dt.year.dropna().astype(int).unique())
 
-# Vehicle Types (Limit to top 200 for performance)
-vehicle_types = df['VEHICLE TYPE CODE 1'].dropna().astype(str).unique().tolist()
-vehicle_types = sorted(vehicle_types)[:200]
+# Vehicle Types (Only show items that appear at least 10,000 times)
+vehicle_type_counts = df['VEHICLE TYPE CODE 1'].value_counts()
+vehicle_types = sorted([str(x) for x in vehicle_type_counts[vehicle_type_counts >= 10000].index if pd.notna(x)])
 
 # Contributing Factors
-factors = df['CONTRIBUTING FACTOR VEHICLE 1'].dropna().astype(str).unique().tolist()
-factors = sorted(factors)
+if df['CONTRIBUTING FACTOR VEHICLE 1'].dtype.name == 'category':
+    factors = sorted([str(x) for x in df['CONTRIBUTING FACTOR VEHICLE 1'].cat.categories if pd.notna(x)])
+else:
+    factors = sorted([str(x) for x in df['CONTRIBUTING FACTOR VEHICLE 1'].dropna().unique()])
 
 # Collision Severity Options
 severity_options = ['Fatality', 'Injury', 'Property Damage Only']
@@ -143,6 +146,17 @@ app.layout = html.Div([
                     dcc.Graph(id='chart-heatmap', style={'display': 'inline-block', 'width': '48%'}),
                     dcc.Graph(id='chart-pie', style={'display': 'inline-block', 'width': '48%'})
                 ], style={'width': '100%', 'marginTop': '20px'}),
+                
+                # Row 3: Age Distribution and Sex Distribution
+                html.Div([
+                    dcc.Graph(id='chart-age', style={'display': 'inline-block', 'width': '48%'}),
+                    dcc.Graph(id='chart-sex', style={'display': 'inline-block', 'width': '48%'})
+                ], style={'width': '100%', 'marginTop': '20px'}),
+                
+                # Row 4: Top Contributing Factors (full width)
+                html.Div([
+                    dcc.Graph(id='chart-factors', style={'width': '100%'})
+                ], style={'width': '100%', 'marginTop': '20px'}),
             ])
             
         ], style={'width': '70%', 'display': 'inline-block', 'padding': '20px', 'verticalAlign': 'top'})
@@ -154,7 +168,10 @@ app.layout = html.Div([
     [Output('chart-bar', 'figure'),
      Output('chart-line', 'figure'),
      Output('chart-heatmap', 'figure'),
-     Output('chart-pie', 'figure')],
+     Output('chart-pie', 'figure'),
+     Output('chart-age', 'figure'),
+     Output('chart-sex', 'figure'),
+     Output('chart-factors', 'figure')],
     [Input('btn-generate', 'n_clicks')],
     [State('filter-borough', 'value'),
      State('filter-year', 'value'),
@@ -167,7 +184,7 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
     if n_clicks == 0:
         # Return empty placeholder charts on initial load
         fig_empty = px.bar(title="Click 'Generate Report' to view visualizations")
-        return fig_empty, fig_empty, fig_empty, fig_empty
+        return fig_empty, fig_empty, fig_empty, fig_empty, fig_empty, fig_empty, fig_empty
 
     print(f"\n--- GENERATING REPORT (Click {n_clicks}) ---")
     
@@ -235,7 +252,15 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
             term_mask = pd.Series(False, index=dff.index)
             for col in search_cols:
                 try:
-                    term_mask = term_mask | dff[col].astype(str).str.contains(term, case=False, na=False)
+                    # Handle categorical columns more efficiently
+                    if dff[col].dtype.name == 'category':
+                        # For categorical, check if term matches any category name
+                        matching_cats = [cat for cat in dff[col].cat.categories if term.lower() in str(cat).lower()]
+                        if matching_cats:
+                            term_mask = term_mask | dff[col].isin(matching_cats)
+                    else:
+                        # For regular columns, convert to string and search
+                        term_mask = term_mask | dff[col].astype(str).str.contains(term, case=False, na=False)
                 except Exception:
                     continue
             
@@ -246,7 +271,7 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
 
     if dff.empty:
         fig_empty = px.bar(title="No data found matching these filters.")
-        return fig_empty, fig_empty, fig_empty, fig_empty
+        return fig_empty, fig_empty, fig_empty, fig_empty, fig_empty, fig_empty, fig_empty
 
     # 4. Generate Visualizations
     
@@ -284,7 +309,82 @@ def update_report(n_clicks, sel_boroughs, sel_years, sel_vehicles, sel_factors, 
         else:
             fig_pie = px.pie(title="No data available")
     
-    return fig_bar, fig_line, fig_heatmap, fig_pie
+    # Age Distribution Chart
+    if 'PERSON_AGE' in dff.columns:
+        ages = pd.to_numeric(dff['PERSON_AGE'], errors='coerce').dropna()
+        if len(ages) > 0:
+            bins = [0, 18, 26, 36, 46, 56, 66, np.inf]
+            labels = ['0-17', '18-25', '26-35', '36-45', '46-55', '56-65', '66+']
+            age_bins = pd.cut(ages, bins=bins, labels=labels, right=False)
+            age_distribution = age_bins.value_counts().sort_index()
+            fig_age = px.bar(
+                x=age_distribution.index.astype(str), 
+                y=age_distribution.values,
+                title="Distribution of Persons Involved in Collisions by Age Group",
+                labels={'x': 'Age Group', 'y': 'Number of Persons (Count)'}
+            )
+            fig_age.update_layout(xaxis_title='Age Group', yaxis_title='Number of Persons (Count)')
+        else:
+            fig_age = px.bar(title="No age data available")
+    else:
+        fig_age = px.bar(title="No age data available")
+    
+    # Sex Distribution Chart
+    if 'PERSON_SEX' in dff.columns:
+        sex_data = dff[dff['PERSON_SEX'] != 'U']
+        if len(sex_data) > 0:
+            sex_counts = sex_data['PERSON_SEX'].value_counts()
+            fig_sex = px.bar(
+                x=sex_counts.index.astype(str),
+                y=sex_counts.values,
+                title="Number of Persons by Sex",
+                labels={'x': 'Sex', 'y': 'Count'}
+            )
+            fig_sex.update_layout(xaxis_title='Sex', yaxis_title='Count')
+        else:
+            fig_sex = px.bar(title="No sex data available")
+    else:
+        fig_sex = px.bar(title="No sex data available")
+    
+    # Top 5 Contributing Factors in Dangerous Collisions
+    if 'IsDanger' in dff.columns:
+        dangerous_collisions = dff[dff['IsDanger'] == 1]
+        if len(dangerous_collisions) > 0:
+            all_factors = pd.melt(
+                dangerous_collisions, 
+                value_vars=['CONTRIBUTING FACTOR VEHICLE 1', 'CONTRIBUTING FACTOR VEHICLE 2'], 
+                value_name='Factor'
+            )
+            # Filter out 'unspecified' more efficiently
+            all_factors = all_factors[all_factors['Factor'].notna()]
+            # Use categorical comparison if possible, otherwise convert only Factor column
+            if all_factors['Factor'].dtype.name == 'category':
+                all_factors = all_factors[~all_factors['Factor'].isin(['unspecified', 'Unspecified', 'UNSPECIFIED'])]
+            else:
+                factor_str = all_factors['Factor'].astype(str).str.lower()
+                all_factors = all_factors[factor_str != 'unspecified']
+            
+            if len(all_factors) > 0:
+                top_5_factors = all_factors['Factor'].value_counts().nlargest(5)
+                fig_factors = px.bar(
+                    x=top_5_factors.index.astype(str),
+                    y=top_5_factors.values,
+                    title="Top 5 Contributing Factors in Dangerous Collisions",
+                    labels={'x': 'Contributing Factor', 'y': 'Count'}
+                )
+                fig_factors.update_layout(
+                    xaxis_title='Contributing Factor',
+                    yaxis_title='Count',
+                    xaxis={'tickangle': -45}
+                )
+            else:
+                fig_factors = px.bar(title="No contributing factor data available")
+        else:
+            fig_factors = px.bar(title="No dangerous collisions found")
+    else:
+        fig_factors = px.bar(title="No danger indicator available")
+    
+    return fig_bar, fig_line, fig_heatmap, fig_pie, fig_age, fig_sex, fig_factors
 
 if __name__ == '__main__':
     app.run(debug=True)
