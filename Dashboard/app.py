@@ -20,11 +20,6 @@ print(f"Loaded {len(df):,} rows with {len(df.columns)} columns")
 #df = pd.read_parquet('crashes.parquet', engine='pyarrow', dtype_backend='pyarrow')
 
 
-df = pd.read_parquet(
-    os.path.join(current_dir, 'your_data.parquet'),
-    engine='fastparquet'
-)
-
 # Optimize dtypes to save memory
 categorical_cols = ['BOROUGH', 'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1', 'PERSON_TYPE', 'PERSON_INJURY']
 for col in categorical_cols:
