@@ -4,13 +4,13 @@ import plotly.express as px
 import numpy as np
 import gdown
 import os
-import gc # Garbage collection to free memory
+import gc
+import pyarrow.parquet as pq # Needed for inspecting schema efficiently
 
 # --- 1. PAGE SETUP ---
 st.set_page_config(page_title="NYC Motor Vehicle Collisions Report", layout="wide")
 
-# --- 2. DATA LOADING (Optimized for Memory) ---
-# CHANGED: Use cache_resource for large static datasets (Shared memory, no copying)
+# --- 2. DATA LOADING (Optimized: Column Pruning) ---
 @st.cache_resource(show_spinner=False) 
 def load_data():
     parquet_file = 'crashes.parquet'
@@ -22,32 +22,53 @@ def load_data():
         url = f'https://drive.google.com/uc?id={file_id}'
         gdown.download(url, parquet_file, quiet=False)
 
-    # B. Load Data with Memory Optimizations
-    print("Loading parquet file into memory...")
-    # engine='pyarrow' and dtype_backend='pyarrow' help reduce RAM usage significantly
-    df = pd.read_parquet(parquet_file, engine='pyarrow', dtype_backend='pyarrow')
+    print("Inspecting Parquet schema...")
+    
+    # B. Define ONLY the columns we actually use in the dashboard
+    # (This skips heavy columns like Latitude, Longitude, Zip Codes, etc.)
+    wanted_cols = [
+        'BOROUGH', 'CRASH DATE', 'CRASH TIME', 'CRASH_DATETIME', 'CRASH YEAR', 'CRASH HOUR',
+        'VEHICLE TYPE CODE 1', 'CONTRIBUTING FACTOR VEHICLE 1', 'CONTRIBUTING FACTOR VEHICLE 2',
+        'NUMBER OF PERSONS INJURED', 'NUMBER OF PERSONS KILLED', 'ON STREET NAME',
+        'PERSON_INJURY', 'PERSON_TYPE', 'PERSON_AGE', 'PERSON_SEX', 'IsDanger'
+    ]
+    
+    # Check which columns actually exist in the file
+    try:
+        parquet_schema = pq.ParquetFile(parquet_file).schema.names
+        cols_to_load = [c for c in wanted_cols if c in parquet_schema]
+        print(f"Loading only {len(cols_to_load)} columns out of {len(parquet_schema)}...")
+    except Exception as e:
+        print(f"Could not inspect schema, attempting full load (Risky): {e}")
+        cols_to_load = None # Fallback to loading everything if inspection fails
 
-    # C. Optimize dtypes
-    # We define categories explicitly to ensure standard pandas handling where needed
+    # C. Load Data (Only specific columns)
+    df = pd.read_parquet(
+        parquet_file, 
+        columns=cols_to_load, 
+        engine='pyarrow', 
+        dtype_backend='pyarrow'
+    )
+
+    # D. Optimize Categories (Memory reduction)
     categorical_cols = ['BOROUGH', 'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1', 'PERSON_TYPE', 'PERSON_INJURY']
     for col in categorical_cols:
         if col in df.columns:
             df[col] = df[col].astype('category')
 
-    # D. Date Parsing
-    if 'CRASH YEAR' not in df.columns:
-        # Use 'coerce' to handle errors and keep memory tight
+    # E. Date Parsing
+    if 'CRASH YEAR' not in df.columns and 'CRASH_DATETIME' in df.columns:
+        # Use coerce to handle errors safely
         df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce')
         df['CRASH_DATE'] = df['CRASH_DATETIME'].dt.date
 
-    # Force garbage collection to clear download buffers immediately
+    # Force garbage collection
     gc.collect()
-    
     return df
 
 # Initialize Data
 try:
-    with st.spinner("Loading 277MB Dataset... (This happens once)"):
+    with st.spinner("Loading optimized dataset..."):
         df = load_data()
 except Exception as e:
     st.error(f"Error loading data: {e}")
@@ -62,7 +83,7 @@ with st.sidebar.form("filter_form"):
 
     # Borough Filter
     if 'BOROUGH' in df.columns:
-        # Filter out UNKNOWN/NaN for the dropdown list
+        # Explicitly remove nulls/Unknowns from the list options
         unique_boroughs = sorted(df[df['BOROUGH'].notna() & (df['BOROUGH'] != 'UNKNOWN')]['BOROUGH'].unique().tolist())
         sel_boroughs = st.multiselect("Borough:", options=unique_boroughs)
     else:
@@ -71,12 +92,14 @@ with st.sidebar.form("filter_form"):
     # Year Filter
     if 'CRASH YEAR' in df.columns:
         unique_years = sorted(df['CRASH YEAR'].dropna().unique())
-    else:
+    elif 'CRASH_DATETIME' in df.columns:
         unique_years = sorted(df['CRASH_DATETIME'].dt.year.dropna().unique())
+    else:
+        unique_years = []
     
     sel_years = st.multiselect("Year:", options=unique_years)
 
-    # Vehicle Type Filter (Top items only > 10000)
+    # Vehicle Type Filter
     if 'VEHICLE TYPE CODE 1' in df.columns:
         v_counts = df['VEHICLE TYPE CODE 1'].value_counts()
         popular_vehicles = sorted([str(x) for x in v_counts[v_counts >= 10000].index if pd.notna(x)])
@@ -86,7 +109,7 @@ with st.sidebar.form("filter_form"):
 
     # Contributing Factor Filter
     if 'CONTRIBUTING FACTOR VEHICLE 1' in df.columns:
-         if df['CONTRIBUTING FACTOR VEHICLE 1'].dtype.name == 'category':
+         if hasattr(df['CONTRIBUTING FACTOR VEHICLE 1'], 'cat'):
              unique_factors = sorted([str(x) for x in df['CONTRIBUTING FACTOR VEHICLE 1'].cat.categories if pd.notna(x)])
          else:
              unique_factors = sorted([str(x) for x in df['CONTRIBUTING FACTOR VEHICLE 1'].dropna().unique()])
@@ -100,12 +123,8 @@ with st.sidebar.form("filter_form"):
     submitted = st.form_submit_button("Generate Report")
 
 # --- 4. FILTERING LOGIC ---
-# Only run filtering if the user submitted or if it's the first load
 if submitted or True:
-    # mask = pd.Series(True, index=df.index) # High memory usage to create a full boolean series
-    # Better strategy: Chained filtering (filters data progressively)
-    
-    dff = df # Start with full reference (no copy yet)
+    dff = df # Reference, not copy
 
     # A. Borough
     if sel_boroughs:
@@ -115,7 +134,7 @@ if submitted or True:
     if sel_years:
         if 'CRASH YEAR' in df.columns:
             dff = dff[dff['CRASH YEAR'].isin(sel_years)]
-        else:
+        elif 'CRASH_DATETIME' in df.columns:
             dff = dff[dff['CRASH_DATETIME'].dt.year.isin(sel_years)]
 
     # C. Vehicle
@@ -129,32 +148,36 @@ if submitted or True:
     # E. Search Query
     if search_query:
         terms = search_query.split()
+        # Only search columns that actually exist in our pruned dataset
         search_cols = [c for c in ['BOROUGH', 'ON STREET NAME', 'CONTRIBUTING FACTOR VEHICLE 1', 
                                    'VEHICLE TYPE CODE 1', 'PERSON_INJURY', 'PERSON_TYPE'] if c in dff.columns]
         
         term_mask = None 
         for term in terms:
+            current_term_mask = None
+            
             # Year Smart Search
             if term.isdigit() and len(term) == 4:
                 year_val = int(term)
                 if 'CRASH YEAR' in dff.columns:
                     current_term_mask = (dff['CRASH YEAR'] == year_val)
-                else:
+                elif 'CRASH_DATETIME' in dff.columns:
                     current_term_mask = (dff['CRASH_DATETIME'].dt.year == year_val)
             
             # Severity Smart Search
             elif term.lower() in ['injury', 'injured', 'injuries']:
-                current_term_mask = (dff['NUMBER OF PERSONS INJURED'] > 0)
+                if 'NUMBER OF PERSONS INJURED' in dff.columns:
+                    current_term_mask = (dff['NUMBER OF PERSONS INJURED'] > 0)
             elif term.lower() in ['fatality', 'fatal', 'killed', 'death']:
-                current_term_mask = (dff['NUMBER OF PERSONS KILLED'] > 0)
+                if 'NUMBER OF PERSONS KILLED' in dff.columns:
+                    current_term_mask = (dff['NUMBER OF PERSONS KILLED'] > 0)
             
             # Text Search
-            else:
+            if current_term_mask is None:
                 current_term_mask = pd.Series(False, index=dff.index)
                 for col in search_cols:
                     try:
-                        if dff[col].dtype.name == 'category':
-                            # Check categories first (faster)
+                        if hasattr(dff[col], 'cat'):
                             matching_cats = [cat for cat in dff[col].cat.categories if term.lower() in str(cat).lower()]
                             if matching_cats:
                                 current_term_mask = current_term_mask | dff[col].isin(matching_cats)
@@ -163,7 +186,6 @@ if submitted or True:
                     except:
                         pass
             
-            # Combine masks
             if term_mask is None:
                 term_mask = current_term_mask
             else:
@@ -263,12 +285,10 @@ if submitted or True:
     if 'IsDanger' in dff.columns:
         dangerous = dff[dff['IsDanger'] == 1]
         if not dangerous.empty:
-            # Optimization: Select only necessary columns before melting
             dangerous_subset = dangerous[['CONTRIBUTING FACTOR VEHICLE 1', 'CONTRIBUTING FACTOR VEHICLE 2']]
             all_factors = pd.melt(dangerous_subset, value_name='Factor').dropna()
             
             if not all_factors.empty:
-                # Check type safely
                 if hasattr(all_factors['Factor'], 'cat'):
                     all_factors = all_factors[~all_factors['Factor'].isin(['unspecified', 'Unspecified', 'UNSPECIFIED'])]
                 else:
@@ -282,3 +302,6 @@ if submitted or True:
                     st.info("No specific factors found")
         else:
             st.info("No dangerous collisions in current selection")
+    else:
+        # If IsDanger is missing, we hide the chart or show a message, but don't crash
+        pass
