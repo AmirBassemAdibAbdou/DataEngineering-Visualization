@@ -1,0 +1,14 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+dash = "*"
+plotly = "*"
+pandas = "==1.5.3"
+fastparquet = "*"
+numpy = "==1.24.3"
+
+[requires]
+python_version = "3.9"
