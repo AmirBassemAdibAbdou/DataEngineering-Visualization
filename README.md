@@ -68,10 +68,43 @@ Interactive Visualizations: A variety of charts (bar charts, maps, heatmaps, etc
 
 💻 Technology Stack
 
-Data Analysis & Cleaning: Python, Pandas 
+Data Analysis & Cleaning: Python, Pandas, numpy, matplotlib, plotly, seaborn
 
 
-Web Framework & Visualization: [e.g., Dash, Plotly, React, Flask] 
+Web Framework & Visualization: [Dash] 
 
 
-Deployment: [e.g., Vercel, Render, Heroku]
+Deployment: [Streamlit]
+
+
+## Setup Steps to Run Notebook
+In the terminal, type the following commands:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+jupyter lab
+```
+Then run on the existing Jupyter server.
+
+## Setup Steps to Run app.py
+In the terminal, type the following commands:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+python app.py
+```
+It will open in a browser.
+
+## Deployment Instructions
+We used Streamlit to deploy so just press the link and wake up the website.
+
+**Link:** [https://dataengineering-visualization-supmhb8smkjuphzap8mclx.streamlit.app/](https://dataengineering-visualization-supmhb8smkjuphzap8mclx.streamlit.app/)
+
+## Team Contributions
+* **Amir:** Setup project, first EDA, Setup Dash, and Deploy.
+* **Anthony:** Cleaning pre-integration and post-integration.
+* **Ali:** Visualizations on Dash app and some cleaning.
+* **Youssef:** Filters on Dash app.
+* **Sandra:** First iteration of cleaning.
