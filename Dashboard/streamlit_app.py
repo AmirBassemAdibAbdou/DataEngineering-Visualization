@@ -5,12 +5,18 @@ import numpy as np
 import gdown
 import os
 import gc
-import pyarrow.parquet as pq # Needed for inspecting schema efficiently
+import pyarrow.parquet as pq
+
+# --- 0. MEMORY OPTIMIZATION (CRITICAL) ---
+# Enable Copy-on-Write (Pandas 2.0+). 
+# This prevents creating deep copies of data when filtering, 
+# allowing multiple users to share the same memory footprint.
+pd.options.mode.copy_on_write = True
 
 # --- 1. PAGE SETUP ---
 st.set_page_config(page_title="NYC Motor Vehicle Collisions Report", layout="wide")
 
-# --- 2. DATA LOADING (Optimized: Column Pruning) ---
+# --- 2. DATA LOADING ---
 @st.cache_resource(show_spinner=False) 
 def load_data():
     parquet_file = 'crashes.parquet'
@@ -18,14 +24,13 @@ def load_data():
     # A. Download if missing
     if not os.path.exists(parquet_file):
         # REPLACE THIS WITH YOUR ACTUAL FILE ID
-        file_id = '1oVO3wrLpqReuu1aS5gukOjCniDNFBeoq' 
+        file_id = 'PASTE_YOUR_GOOGLE_DRIVE_FILE_ID_HERE' 
         url = f'https://drive.google.com/uc?id={file_id}'
         gdown.download(url, parquet_file, quiet=False)
 
     print("Inspecting Parquet schema...")
     
-    # B. Define ONLY the columns we actually use in the dashboard
-    # (This skips heavy columns like Latitude, Longitude, Zip Codes, etc.)
+    # B. Column Pruning
     wanted_cols = [
         'BOROUGH', 'CRASH DATE', 'CRASH TIME', 'CRASH_DATETIME', 'CRASH YEAR', 'CRASH HOUR',
         'VEHICLE TYPE CODE 1', 'CONTRIBUTING FACTOR VEHICLE 1', 'CONTRIBUTING FACTOR VEHICLE 2',
@@ -33,16 +38,14 @@ def load_data():
         'PERSON_INJURY', 'PERSON_TYPE', 'PERSON_AGE', 'PERSON_SEX', 'IsDanger'
     ]
     
-    # Check which columns actually exist in the file
     try:
         parquet_schema = pq.ParquetFile(parquet_file).schema.names
         cols_to_load = [c for c in wanted_cols if c in parquet_schema]
-        print(f"Loading only {len(cols_to_load)} columns out of {len(parquet_schema)}...")
     except Exception as e:
-        print(f"Could not inspect schema, attempting full load (Risky): {e}")
-        cols_to_load = None # Fallback to loading everything if inspection fails
+        print(f"Schema inspection failed: {e}")
+        cols_to_load = None
 
-    # C. Load Data (Only specific columns)
+    # C. Load Data
     df = pd.read_parquet(
         parquet_file, 
         columns=cols_to_load, 
@@ -50,19 +53,23 @@ def load_data():
         dtype_backend='pyarrow'
     )
 
-    # D. Optimize Categories (Memory reduction)
+    # D. Date Parsing & Filtering (Memory Saver)
+    # Filter out very old data to save RAM (Adjust year as needed, e.g., 2019)
+    MIN_YEAR = 2018 
+    
+    if 'CRASH YEAR' in df.columns:
+        df = df[df['CRASH YEAR'] >= MIN_YEAR]
+    elif 'CRASH_DATETIME' in df.columns:
+        df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce')
+        df = df[df['CRASH_DATETIME'].dt.year >= MIN_YEAR]
+        df['CRASH_DATE'] = df['CRASH_DATETIME'].dt.date
+        
+    # E. Optimize Categories
     categorical_cols = ['BOROUGH', 'CONTRIBUTING FACTOR VEHICLE 1', 'VEHICLE TYPE CODE 1', 'PERSON_TYPE', 'PERSON_INJURY']
     for col in categorical_cols:
         if col in df.columns:
             df[col] = df[col].astype('category')
 
-    # E. Date Parsing
-    if 'CRASH YEAR' not in df.columns and 'CRASH_DATETIME' in df.columns:
-        # Use coerce to handle errors safely
-        df['CRASH_DATETIME'] = pd.to_datetime(df['CRASH_DATETIME'], errors='coerce')
-        df['CRASH_DATE'] = df['CRASH_DATETIME'].dt.date
-
-    # Force garbage collection
     gc.collect()
     return df
 
@@ -78,18 +85,17 @@ except Exception as e:
 st.sidebar.header("Filters")
 with st.sidebar.form("filter_form"):
     
-    # Search Box
     search_query = st.text_input("Global Search", placeholder='e.g. "Brooklyn 2022"')
 
-    # Borough Filter
+    # Optimized Dropdowns (Using existing dataframe without copying)
     if 'BOROUGH' in df.columns:
-        # Explicitly remove nulls/Unknowns from the list options
-        unique_boroughs = sorted(df[df['BOROUGH'].notna() & (df['BOROUGH'] != 'UNKNOWN')]['BOROUGH'].unique().tolist())
+        unique_boroughs = sorted(df['BOROUGH'].dropna().unique().tolist())
+        # Remove 'UNKNOWN' if present
+        if 'UNKNOWN' in unique_boroughs: unique_boroughs.remove('UNKNOWN')
         sel_boroughs = st.multiselect("Borough:", options=unique_boroughs)
     else:
         sel_boroughs = []
 
-    # Year Filter
     if 'CRASH YEAR' in df.columns:
         unique_years = sorted(df['CRASH YEAR'].dropna().unique())
     elif 'CRASH_DATETIME' in df.columns:
@@ -99,7 +105,6 @@ with st.sidebar.form("filter_form"):
     
     sel_years = st.multiselect("Year:", options=unique_years)
 
-    # Vehicle Type Filter
     if 'VEHICLE TYPE CODE 1' in df.columns:
         v_counts = df['VEHICLE TYPE CODE 1'].value_counts()
         popular_vehicles = sorted([str(x) for x in v_counts[v_counts >= 10000].index if pd.notna(x)])
@@ -107,7 +112,6 @@ with st.sidebar.form("filter_form"):
     else:
         sel_vehicles = []
 
-    # Contributing Factor Filter
     if 'CONTRIBUTING FACTOR VEHICLE 1' in df.columns:
          if hasattr(df['CONTRIBUTING FACTOR VEHICLE 1'], 'cat'):
              unique_factors = sorted([str(x) for x in df['CONTRIBUTING FACTOR VEHICLE 1'].cat.categories if pd.notna(x)])
@@ -117,35 +121,31 @@ with st.sidebar.form("filter_form"):
     else:
         sel_factors = []
 
-    # Severity Filter
     sel_severity = st.multiselect("Collision Severity:", options=['Fatality', 'Injury', 'Property Damage Only'])
 
     submitted = st.form_submit_button("Generate Report")
 
 # --- 4. FILTERING LOGIC ---
 if submitted or True:
-    dff = df # Reference, not copy
+    # Due to Copy-on-Write (enabled at top), this does NOT immediately duplicate memory
+    dff = df 
 
-    # A. Borough
     if sel_boroughs:
         dff = dff[dff['BOROUGH'].isin(sel_boroughs)]
 
-    # B. Year
     if sel_years:
         if 'CRASH YEAR' in df.columns:
             dff = dff[dff['CRASH YEAR'].isin(sel_years)]
         elif 'CRASH_DATETIME' in df.columns:
             dff = dff[dff['CRASH_DATETIME'].dt.year.isin(sel_years)]
 
-    # C. Vehicle
     if sel_vehicles:
         dff = dff[dff['VEHICLE TYPE CODE 1'].isin(sel_vehicles)]
 
-    # D. Factors
     if sel_factors:
         dff = dff[dff['CONTRIBUTING FACTOR VEHICLE 1'].isin(sel_factors)]
 
-    # E. Search Query
+    # Search Query
     if search_query:
         terms = search_query.split()
         # Only search columns that actually exist in our pruned dataset
@@ -156,7 +156,6 @@ if submitted or True:
         for term in terms:
             current_term_mask = None
             
-            # Year Smart Search
             if term.isdigit() and len(term) == 4:
                 year_val = int(term)
                 if 'CRASH YEAR' in dff.columns:
@@ -164,7 +163,6 @@ if submitted or True:
                 elif 'CRASH_DATETIME' in dff.columns:
                     current_term_mask = (dff['CRASH_DATETIME'].dt.year == year_val)
             
-            # Severity Smart Search
             elif term.lower() in ['injury', 'injured', 'injuries']:
                 if 'NUMBER OF PERSONS INJURED' in dff.columns:
                     current_term_mask = (dff['NUMBER OF PERSONS INJURED'] > 0)
@@ -172,7 +170,6 @@ if submitted or True:
                 if 'NUMBER OF PERSONS KILLED' in dff.columns:
                     current_term_mask = (dff['NUMBER OF PERSONS KILLED'] > 0)
             
-            # Text Search
             if current_term_mask is None:
                 current_term_mask = pd.Series(False, index=dff.index)
                 for col in search_cols:
@@ -202,6 +199,10 @@ if submitted or True:
 
     # --- 5. LAYOUT & VISUALIZATIONS ---
     st.title("NYC Motor Vehicle Collisions Report")
+    
+    # Display a warning if data was cut off
+    st.caption("Note: Data restricted to 2018+ for performance optimization.")
+    
     st.markdown(f"**Showing {len(dff):,} rows** based on current filters")
 
     if dff.empty:
