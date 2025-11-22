@@ -24,7 +24,7 @@ def load_data():
     # A. Download if missing
     if not os.path.exists(parquet_file):
         # REPLACE THIS WITH YOUR ACTUAL FILE ID
-        file_id = 'PASTE_YOUR_GOOGLE_DRIVE_FILE_ID_HERE' 
+        file_id = '1oVO3wrLpqReuu1aS5gukOjCniDNFBeoq' 
         url = f'https://drive.google.com/uc?id={file_id}'
         gdown.download(url, parquet_file, quiet=False)
 
