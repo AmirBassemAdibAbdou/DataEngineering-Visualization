@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import numpy as np
 
+
 # 1. Load the Dataset
 print("Loading parquet file (this may take a moment)...")
 df = pd.read_parquet('crashes.parquet', engine='pyarrow', dtype_backend='pyarrow')
