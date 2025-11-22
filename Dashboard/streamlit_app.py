@@ -148,6 +148,7 @@ if submitted or True:
     # Search Query
     if search_query:
         terms = search_query.split()
+        # Only search columns that actually exist in our pruned dataset
         search_cols = [c for c in ['BOROUGH', 'ON STREET NAME', 'CONTRIBUTING FACTOR VEHICLE 1', 
                                    'VEHICLE TYPE CODE 1', 'PERSON_INJURY', 'PERSON_TYPE'] if c in dff.columns]
         
@@ -302,3 +303,6 @@ if submitted or True:
                     st.info("No specific factors found")
         else:
             st.info("No dangerous collisions in current selection")
+    else:
+        # If IsDanger is missing, we hide the chart or show a message, but don't crash
+        pass
